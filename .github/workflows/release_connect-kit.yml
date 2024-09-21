@@ -1,0 +1,105 @@
+name: Release Connect Kit
+concurrency: release-${{ github.repository }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deploy as'
+        type: environment
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      PKG_NAME: 'Connect Kit'
+      PKG_DIR: 'packages/connect-kit'
+      PKG_SPEC: '@ledgerhq/connect-kit'
+      # use 'latest' for release, 'alpha' or 'beta' for pre-releases
+      PKG_RELEASE_TAG: 'latest'
+      # make sure it matches the version on package.json
+      PKG_VERSION: '1.1.12'
+      GIT_TAG_PREFIX: 'ck-'
+    steps:
+      # Checkout project repository
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.ref }}
+
+      # Setup Node.js environment
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          registry-url: https://registry.npmjs.org/
+          node-version: '20'
+
+      # Build
+      - name: Build
+        run: |
+          cd ${{ env.PKG_DIR }}
+          yarn && yarn build
+
+      # Configure Git
+      - name: Git configuration
+        run: |
+          git config --global user.name "$(git --no-pager log --format=format:'%an' -n 1)"
+          git config --global user.email "$(git --no-pager log --format=format:'%ae' -n 1)"
+
+      # Bump package version
+      - name: Bump release version
+        run: |
+          cd ${{ env.PKG_DIR }}
+          echo "NEW_VERSION=v${{ env.PKG_VERSION }}" >> $GITHUB_ENV
+
+      # Update changelog unreleased section with new version
+      - name: Update changelog
+        uses: superfaceai/release-changelog-action@v1
+        with:
+          path-to-changelog: ${{ env.PKG_DIR }}/CHANGELOG.md
+          version: ${{ env.NEW_VERSION }}
+          operation: release
+
+      # Commit changes
+      - name: Commit CHANGELOG.md and package.json changes and create tag
+        run: |
+          cd ${{ env.PKG_DIR }}
+          git add "package.json"
+          git add "CHANGELOG.md"
+          git commit -m "chore: release ${{ env.PKG_NAME }} ${{ env.NEW_VERSION }}"
+          git tag ${{ env.GIT_TAG_PREFIX }}${{ env.NEW_VERSION }}
+
+      # Publish version to public repository
+      - name: Publish
+        run: |
+          cd ${{ env.PKG_DIR }}
+          yarn publish --verbose --access public --tag ${{ env.PKG_RELEASE_TAG }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPMJS_TOKEN }}
+
+      # Push repository changes
+      - name: Push changes to repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push origin && git push --tags
+
+      # Read version changelog
+      - id: get-changelog
+        name: Get version changelog
+        uses: superfaceai/release-changelog-action@v1
+        with:
+          path-to-changelog: ${{ env.PKG_DIR }}/CHANGELOG.md
+          version: ${{ env.NEW_VERSION }}
+          operation: read
+
+      # Update GitHub release with changelog
+      - name: Update GitHub release documentation
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.GIT_TAG_PREFIX }}${{ env.NEW_VERSION }}
+          body: ${{ steps.get-changelog.outputs.changelog }}
+          prerelease: ${{ startsWith(github.event.inputs.release-type, 'pre') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
